@@ -1,0 +1,11 @@
+[[shards]]
+name = "Moscow"
+idx = 0
+
+[[shards]]
+name = "Minsk"
+idx = 1
+
+[[shards]]
+name = "Kiev"
+idx = 2
