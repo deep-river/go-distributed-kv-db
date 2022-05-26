@@ -3,7 +3,7 @@ set -e
 
 trap 'killall distribkv' SIGINT
 
-cdd $(dirname $0)
+cd $(dirname $0)
 
 killall distribkv || true
 sleep 0.1
