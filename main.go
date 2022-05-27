@@ -12,8 +12,6 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Currently using flag - commandline parameters for configuration
-// TODO: Use config files instead
 var (
 	dbLocation = flag.String("db-location", "my.db", "The bolt db databasse filepath")
 	httpAddr   = flag.String("http-addr", "127.0.0.1:8080", "http host and port")
@@ -45,10 +43,15 @@ func main() {
 
 	var shardCount int
 	var shardIdx int = -1
+	var addrs = make(map[int]string)
+
 	for _, s := range c.Shards {
+		addrs[s.Idx] = s.Address
+
 		if s.Idx+1 > shardCount {
 			shardCount = s.Idx + 1
 		}
+
 		if s.Name == *shard {
 			shardIdx = s.Idx
 		}
@@ -68,7 +71,7 @@ func main() {
 
 	fmt.Println("distribkv server start")
 
-	srv := web.NewServer(db, shardIdx, shardCount)
+	srv := web.NewServer(db, shardIdx, shardCount, addrs)
 
 	http.HandleFunc("/get", srv.GetHandler)
 	http.HandleFunc("/set", srv.SetHandler)

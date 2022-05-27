@@ -1,8 +1,9 @@
 package config
 
 type Shard struct {
-	Name string
-	Idx  int
+	Name    string
+	Idx     int
+	Address string
 }
 
 type Config struct {
