@@ -8,33 +8,89 @@ import (
 	"testing"
 )
 
-func TestGetSet(t *testing.T) {
-	f, err := ioutil.TempFile(os.TempDir(), "kvdb0")
-	if err != nil {
-		t.Fatalf("Couldn't create temp file: %v", err)
-	}
+func createTempDb(t *testing.T, readOnly bool) *db.Database {
+	t.Helper()
 
+	f, err := ioutil.TempFile(os.TempDir(), "kvdb")
+	if err != nil {
+		t.Fatalf("Could not create temp file: %v", err)
+	}
 	name := f.Name()
 	f.Close()
-	defer os.Remove(name)
+	t.Cleanup(func() { os.Remove(name) })
 
-	db, closeFunc, err := db.NewDatabase(name)
+	db, closeFunc, err := db.NewDatabase(name, readOnly)
 	if err != nil {
-		t.Fatalf("Couldn't create a new database: %v", err)
+		t.Fatalf("Could not create a new database: %v", err)
 	}
-	defer closeFunc()
+	t.Cleanup(func() { closeFunc() })
 
-	if err := db.SetKey("test", []byte("Great")); err != nil {
-		t.Fatalf("Couldn't write key: %v", err)
+	return db
+}
+
+func TestGetSet(t *testing.T) {
+	db := createTempDb(t, false)
+
+	if err := db.SetKey("party", []byte("Great")); err != nil {
+		t.Fatalf("Could not write key: %v", err)
 	}
 
-	value, err := db.GetKey("test")
+	value, err := db.GetKey("party")
 	if err != nil {
-		t.Fatalf(`Couldn't get the key "test": %v`, err)
+		t.Fatalf(`Could not get the key "party": %v`, err)
 	}
 
 	if !bytes.Equal(value, []byte("Great")) {
-		t.Errorf(`Unexpected value for key "test": got: %q, want %q`, value, "Greats")
+		t.Errorf(`Unexpected value for key "party": got %q, want %q`, value, "Great")
+	}
+
+	k, v, err := db.GetNextKeyForReplication()
+	if err != nil {
+		t.Fatalf(`Unexpected error for GetNextKeyForReplication(): %v`, err)
+	}
+
+	if !bytes.Equal(k, []byte("party")) || !bytes.Equal(v, []byte("Great")) {
+		t.Errorf(`GetNextKeyForReplication(): got %q, %q; want %q, %q`, k, v, "party", "Great")
+	}
+}
+
+func TestDeleteReplicationKey(t *testing.T) {
+	db := createTempDb(t, false)
+
+	setKey(t, db, "party", "Great")
+
+	k, v, err := db.GetNextKeyForReplication()
+	if err != nil {
+		t.Fatalf(`Unexpected error for GetNextKeyForReplication(): %v`, err)
+	}
+
+	if !bytes.Equal(k, []byte("party")) || !bytes.Equal(v, []byte("Great")) {
+		t.Errorf(`GetNextKeyForReplication(): got %q, %q; want %q, %q`, k, v, "party", "Great")
+	}
+
+	if err := db.DeleteReplicationKey([]byte("party"), []byte("Bad")); err == nil {
+		t.Fatalf(`DeleteReplicationKey("party", "Bad"): got nil error, want non-nil error`)
+	}
+
+	if err := db.DeleteReplicationKey([]byte("party"), []byte("Great")); err != nil {
+		t.Fatalf(`DeleteReplicationKey("party", "Great"): got %q, want nil error`, err)
+	}
+
+	k, v, err = db.GetNextKeyForReplication()
+	if err != nil {
+		t.Fatalf(`Unexpected error for GetNextKeyForReplication(): %v`, err)
+	}
+
+	if k != nil || v != nil {
+		t.Errorf(`GetNextKeyForReplication(): got %v, %v; want nil, nil`, k, v)
+	}
+}
+
+func TestSetReadOnly(t *testing.T) {
+	db := createTempDb(t, true)
+
+	if err := db.SetKey("party", []byte("Bad")); err == nil {
+		t.Fatalf("SetKey(%q, %q): got nil error, want non-nil error", "party", []byte("Bad"))
 	}
 }
 
@@ -53,33 +109,25 @@ func getKey(t *testing.T, d *db.Database, key string) string {
 	if err != nil {
 		t.Fatalf("GetKey(%q) failed: %v", key, err)
 	}
+
 	return string(value)
 }
 
 func TestDeleteExtraKeys(t *testing.T) {
-	f, err := ioutil.TempFile(os.TempDir(), "kvdb0")
-	if err != nil {
-		t.Fatalf("Couldn't create temp file: %v", err)
+	db := createTempDb(t, false)
+
+	setKey(t, db, "party", "Great")
+	setKey(t, db, "us", "CapitalistPigs")
+
+	if err := db.DeleteExtraKeys(func(name string) bool { return name == "us" }); err != nil {
+		t.Fatalf("Could not delete extra keys: %v", err)
 	}
 
-	name := f.Name()
-	f.Close()
-	defer os.Remove(name)
-
-	db, closeFunc, err := db.NewDatabase(name)
-	if err != nil {
-		t.Fatalf("Couldn't create a new database: %v", err)
-	}
-	defer closeFunc()
-
-	setKey(t, db, "test", "Great")
-	setKey(t, db, "data", "stays")
-
-	if err := db.DeleteExtraKeys(func(name string) bool { return name == "test" }); err != nil {
-		t.Fatalf("Couldn't delete exra keys: %v", err)
+	if value := getKey(t, db, "party"); value != "Great" {
+		t.Errorf(`Unexpected value for key "party": got %q, want %q`, value, "Great")
 	}
 
-	if value := getKey(t, db, "test"); value != "" {
-		t.Errorf(`Unxpected value for key "test": got %q, want %q`, value, "")
+	if value := getKey(t, db, "us"); value != "" {
+		t.Errorf(`Unexpected value for key "us": got %q, want %q`, value, "")
 	}
 }

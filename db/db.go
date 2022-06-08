@@ -1,29 +1,33 @@
 package db
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 
 	bolt "go.etcd.io/bbolt"
 )
 
 var defaultBucket = []byte("default")
+var replicaBucket = []byte("replication")
 
 // Database is an open bolt database
 type Database struct {
-	db *bolt.DB
+	db       *bolt.DB
+	readOnly bool
 }
 
 // Returns an instance of a database
-func NewDatabase(dbPath string) (db *Database, closeFunc func() error, err error) {
+func NewDatabase(dbPath string, readOnly bool) (db *Database, closeFunc func() error, err error) {
 	boltDb, err := bolt.Open(dbPath, 0600, nil)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	db = &Database{db: boltDb}
+	db = &Database{db: boltDb, readOnly: readOnly}
 	closeFunc = boltDb.Close
 
-	if err := db.createDefaultBucket(); err != nil {
+	if err := db.createBuckets(); err != nil {
 		closeFunc()
 		return nil, nil, fmt.Errorf("creating default bucket: %w", err)
 	}
@@ -31,17 +35,70 @@ func NewDatabase(dbPath string) (db *Database, closeFunc func() error, err error
 	return db, closeFunc, nil
 }
 
-func (d *Database) createDefaultBucket() error {
+func (d *Database) createBuckets() error {
 	return d.db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(defaultBucket)
-		return err
+		if _, err := tx.CreateBucketIfNotExists(defaultBucket); err != nil {
+			return err
+		}
+		if _, err := tx.CreateBucketIfNotExists(replicaBucket); err != nil {
+			return err
+		}
+		return nil
 	})
 }
 
 func (d *Database) SetKey(key string, value []byte) error {
+	if d.readOnly {
+		return errors.New("read-only mode")
+	}
 	return d.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(defaultBucket)
-		return b.Put([]byte(key), value)
+		if err := tx.Bucket(defaultBucket).Put([]byte(key), value); err != nil {
+			return err
+		}
+
+		return tx.Bucket(replicaBucket).Put([]byte(key), value)
+	})
+}
+
+func copyByteSlice(b []byte) []byte {
+	if b == nil {
+		return nil
+	}
+
+	res := make([]byte, len(b))
+	copy(res, b)
+	return res
+}
+
+func (d *Database) GetNextKeyForReplication() (key, value []byte, err error) {
+	err = d.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(replicaBucket)
+		k, v := b.Cursor().First()
+		key = copyByteSlice(k)
+		value = copyByteSlice(v)
+		return nil
+	})
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return key, value, nil
+}
+
+func (d *Database) DeleteReplicationKey(key, value []byte) (err error) {
+	return d.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(replicaBucket)
+		v := b.Get(key)
+		if v == nil {
+			return errors.New("key does not exist")
+		}
+
+		if !bytes.Equal(v, value) {
+			return errors.New("value does not match")
+		}
+
+		return b.Delete(key)
 	})
 }
 
@@ -49,7 +106,7 @@ func (d *Database) GetKey(key string) ([]byte, error) {
 	var result []byte
 	err := d.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(defaultBucket)
-		result = b.Get([]byte(key))
+		result = copyByteSlice(b.Get([]byte(key)))
 		return nil
 	})
 	if err == nil {
@@ -64,8 +121,9 @@ func (d *Database) DeleteExtraKeys(isExtra func(string) bool) error {
 	err := d.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(defaultBucket)
 		return b.ForEach(func(k, v []byte) error {
-			if isExtra(string(k)) {
-				keys = append(keys, string(k))
+			ks := string(k)
+			if isExtra(string(ks)) {
+				keys = append(keys, ks)
 			}
 			return nil
 		})

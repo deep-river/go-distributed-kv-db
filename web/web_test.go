@@ -15,31 +15,32 @@ import (
 	"testing"
 )
 
-func CreateShardDB(t *testing.T, idx int) *db.Database {
+func createShardDb(t *testing.T, idx int) *db.Database {
 	t.Helper()
 
 	tmpFile, err := ioutil.TempFile(os.TempDir(), fmt.Sprintf("db%d", idx))
 	if err != nil {
-		t.Fatalf("Couldn't create a temp db %d: %v", idx, err)
+		t.Fatalf("Could not create a temp db %d: %v", idx, err)
 	}
-	tmpFile.Close()
-	name := tmpFile.Name()
 
+	tmpFile.Close()
+
+	name := tmpFile.Name()
 	t.Cleanup(func() { os.Remove(name) })
 
-	db, closeFunc, err := db.NewDatabase(name)
+	db, closeFunc, err := db.NewDatabase(name, false)
 	if err != nil {
-		t.Fatalf("Couldn't create new database %q: %v", name, err)
+		t.Fatalf("Could not create new database %q: %v", name, err)
 	}
 	t.Cleanup(func() { closeFunc() })
 
 	return db
 }
 
-func CreateShardServer(t *testing.T, idx int, addrs map[int]string) (*db.Database, *web.Server) {
+func createShardServer(t *testing.T, idx int, addrs map[int]string) (*db.Database, *web.Server) {
 	t.Helper()
 
-	db := CreateShardDB(t, idx)
+	db := createShardDb(t, idx)
 
 	cfg := &config.Shards{
 		Addrs:  addrs,
@@ -78,12 +79,13 @@ func TestWebServer(t *testing.T) {
 		1: strings.TrimPrefix(ts2.URL, "http://"),
 	}
 
-	db1, web1 := CreateShardServer(t, 0, addrs)
-	db2, web2 := CreateShardServer(t, 1, addrs)
+	db1, web1 := createShardServer(t, 0, addrs)
+	db2, web2 := createShardServer(t, 1, addrs)
 
+	// Calculated manually and depends on the sharding function.
 	keys := map[string]int{
-		"Rus": 1,
-		"USA": 0,
+		"Soviet": 1,
+		"USA":    0,
 	}
 
 	ts1GetHandler = web1.GetHandler
@@ -92,27 +94,30 @@ func TestWebServer(t *testing.T) {
 	ts2SetHandler = web2.SetHandler
 
 	for key := range keys {
+		// Send all to first shard to test redirects.
 		_, err := http.Get(fmt.Sprintf(ts1.URL+"/set?key=%s&value=value-%s", key, key))
 		if err != nil {
-			t.Fatalf("Couldn't set the key %q: %v", key, err)
+			t.Fatalf("Could not set the key %q: %v", key, err)
 		}
 	}
 
 	for key := range keys {
+		// Send all to first shard to test redirects.
 		resp, err := http.Get(fmt.Sprintf(ts1.URL+"/get?key=%s", key))
 		if err != nil {
 			t.Fatalf("Get key %q error: %v", key, err)
 		}
 		contents, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
-			t.Fatalf("Couldn't read contents of the key %q: %v", key, err)
+			t.Fatalf("Could read contents of the key %q: %v", key, err)
 		}
 
 		want := []byte("value-" + key)
 		if !bytes.Contains(contents, want) {
 			t.Errorf("Unexpected contents of the key %q: got %q, want the result to contain %q", key, contents, want)
 		}
-		log.Printf("Contents of key %q: %s", key, err)
+
+		log.Printf("Contents of key %q: %s", key, contents)
 	}
 
 	value1, err := db1.GetKey("USA")
@@ -122,16 +127,16 @@ func TestWebServer(t *testing.T) {
 
 	want1 := "value-USA"
 	if !bytes.Equal(value1, []byte(want1)) {
-		t.Errorf("Unexpected value of key USA: got %q, want %q", value1, want1)
+		t.Errorf("Unexpected value of USA key: got %q, want %q", value1, want1)
 	}
 
-	value2, err := db2.GetKey("Rus")
+	value2, err := db2.GetKey("Soviet")
 	if err != nil {
-		t.Fatalf("Rus key error: %v", err)
+		t.Fatalf("Soviet key error: %v", err)
 	}
 
-	want2 := "value-Rus"
+	want2 := "value-Soviet"
 	if !bytes.Equal(value2, []byte(want2)) {
-		t.Errorf("Unexpected value of key USA: got %q, want %q", value2, want2)
+		t.Errorf("Unexpected value of Soviet key: got %q, want %q", value2, want2)
 	}
 }
